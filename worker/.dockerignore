@@ -31,3 +31,9 @@ test_*
 # Temporary files
 tmp/
 temp/
+
+# Deployment files
+deploy-worker.sh
+docker-compose.yml
+.env*
+image.tar

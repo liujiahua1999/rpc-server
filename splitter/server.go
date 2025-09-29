@@ -5,397 +5,405 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
-	"net/url"
+	"net/rpc"
 	"os"
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
-	"unicode"
-	"unsafe"
+	"time"
 
 	"github.com/gorilla/mux"
 )
 
-type FileSplitter struct {
-	mu      sync.RWMutex
-	files   map[string]*SplitFile
-	tempDir string
+// Job structure (matches worker)
+type Job struct {
+	JobID   string `json:"job_id"`
+	PartNum int    `json:"part_num"`
+	Content string `json:"content"`
 }
 
-type SplitFile struct {
-	URL       string
-	NumParts  int
-	Filename  string
-	FilePath  string
-	FileSize  int64
-	Parts     []FilePart
-	CreatedAt int64
+// Result structure (matches worker)
+type JobResult struct {
+	JobID       string         `json:"job_id"`
+	PartNum     int            `json:"part_num"`
+	WorkerID    string         `json:"worker_id"`
+	WordCount   map[string]int `json:"word_count"`
+	TotalWords  int            `json:"total_words"`
+	UniqueWords int            `json:"unique_words"`
+	Status      string         `json:"status"`
 }
 
-type FilePart struct {
-	PartNumber int
-	Start      int
-	End        int
-	Size       int
+// RPC structures (matches worker)
+type GetJobArgs struct {
+	WorkerID string
 }
 
-type SplitRequest struct {
-	URL      string `json:"url"`
-	NumParts int    `json:"num_parts"`
+type GetJobReply struct {
+	Job    Job
+	HasJob bool
 }
 
-type SplitResponse struct {
-	JobID    string     `json:"job_id"`
-	URL      string     `json:"url"`
-	NumParts int        `json:"num_parts"`
-	Parts    []FilePart `json:"parts"`
-	FileSize int64      `json:"file_size"`
+// Server state management
+type MapReduceServer struct {
+	mu               sync.RWMutex
+	jobs             []Job
+	pendingJobs      []Job
+	completedResults map[string]JobResult
+	finalWordCount   map[string]int
+	totalProcessed   int
+	totalJobs        int
+	jobInProgress    map[string]time.Time // jobID -> start time
+	maxRetries       int
+	retryTimeout     time.Duration
 }
 
-func NewFileSplitter() *FileSplitter {
-	tempDir := "/tmp/splitter"
-	os.MkdirAll(tempDir, 0755)
-	return &FileSplitter{
-		files:   make(map[string]*SplitFile),
-		tempDir: tempDir,
+// JobServer RPC service
+type JobServer struct {
+	server *MapReduceServer
+}
+
+// GetJob RPC method - called by workers to get work
+func (js *JobServer) GetJob(args *GetJobArgs, reply *GetJobReply) error {
+	js.server.mu.Lock()
+	defer js.server.mu.Unlock()
+
+	log.Printf("Worker %s requesting job", args.WorkerID)
+
+	// Check for timed out jobs and re-queue them
+	js.server.requeueTimedOutJobs()
+
+	// Check if we have pending jobs
+	if len(js.server.pendingJobs) == 0 {
+		reply.HasJob = false
+		log.Printf("No jobs available for worker %s", args.WorkerID)
+		return nil
+	}
+
+	// Give the first pending job to the worker
+	job := js.server.pendingJobs[0]
+	js.server.pendingJobs = js.server.pendingJobs[1:]
+
+	// Track this job as in progress
+	jobKey := fmt.Sprintf("%s-%d", job.JobID, job.PartNum)
+	js.server.jobInProgress[jobKey] = time.Now()
+
+	reply.Job = job
+	reply.HasJob = true
+
+	log.Printf("Assigned job %s part %d to worker %s", job.JobID, job.PartNum, args.WorkerID)
+	return nil
+}
+
+// Requeue jobs that have been in progress too long
+func (mrs *MapReduceServer) requeueTimedOutJobs() {
+	now := time.Now()
+	for jobKey, startTime := range mrs.jobInProgress {
+		if now.Sub(startTime) > mrs.retryTimeout {
+			log.Printf("Job %s timed out, re-queuing", jobKey)
+
+			// Find the original job and re-queue it
+			parts := strings.Split(jobKey, "-")
+			if len(parts) >= 2 {
+				jobID := strings.Join(parts[:len(parts)-1], "-")
+				partNum, err := strconv.Atoi(parts[len(parts)-1])
+				if err == nil {
+					// Find the job in our original jobs list
+					for _, job := range mrs.jobs {
+						if job.JobID == jobID && job.PartNum == partNum {
+							mrs.pendingJobs = append(mrs.pendingJobs, job)
+							break
+						}
+					}
+				}
+			}
+			delete(mrs.jobInProgress, jobKey)
+		}
 	}
 }
 
-func (fs *FileSplitter) downloadFile(fileURL string) (string, error) {
-	// Parse URL to get filename
-	parsedURL, err := url.Parse(fileURL)
+// Download file from URL
+func downloadFromURL(url string) (string, error) {
+	log.Printf("Downloading file from: %s", url)
+
+	// Create HTTP client with timeout
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+	}
+
+	// Make HTTP GET request
+	resp, err := client.Get(url)
 	if err != nil {
-		return "", fmt.Errorf("invalid URL: %w", err)
-	}
-
-	// Extract filename from URL path
-	parts := strings.Split(parsedURL.Path, "/")
-	filename := parts[len(parts)-1]
-	if filename == "" {
-		filename = "downloaded_file.txt"
-	}
-
-	filepath := fmt.Sprintf("%s/%s", fs.tempDir, filename)
-
-	// Download file
-	resp, err := http.Get(fileURL)
-	if err != nil {
-		return "", fmt.Errorf("failed to download file: %w", err)
+		return "", fmt.Errorf("failed to download file: %v", err)
 	}
 	defer resp.Body.Close()
 
+	// Check status code
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("failed to download file: HTTP %d", resp.StatusCode)
 	}
 
-	// Create local file
-	file, err := os.Create(filepath)
+	// Read the content
+	content, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", fmt.Errorf("failed to create local file: %w", err)
-	}
-	defer file.Close()
-
-	// Copy content
-	_, err = io.Copy(file, resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("failed to save file: %w", err)
+		return "", fmt.Errorf("failed to read file content: %v", err)
 	}
 
-	return filepath, nil
+	log.Printf("Successfully downloaded %d bytes", len(content))
+	return string(content), nil
 }
 
-func (fs *FileSplitter) splitFileInMemory(filepath string, numParts int) (*SplitFile, error) {
-	// Open the file
-	file, err := os.Open(filepath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open file: %w", err)
-	}
-	defer file.Close()
+// Split content into chunks for parallel processing
+func splitContentIntoJobs(content string, jobID string, chunkSize int) []Job {
+	var jobs []Job
+	contentRunes := []rune(content)
+	totalLength := len(contentRunes)
+	partNum := 0
 
-	// Get file info
-	info, err := file.Stat()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get file info: %w", err)
-	}
-
-	fileSize := info.Size()
-	if fileSize == 0 {
-		return nil, fmt.Errorf("file is empty")
-	}
-
-	// Memory map the file for O(1) access
-	data, err := syscall.Mmap(int(file.Fd()), 0, int(fileSize), syscall.PROT_READ, syscall.MAP_SHARED)
-	if err != nil {
-		return nil, fmt.Errorf("failed to mmap file: %w", err)
-	}
-	defer syscall.Munmap(data)
-
-	// Convert to string view for easier handling
-	text := *(*string)(unsafe.Pointer(&data))
-
-	// Calculate approximate chunk size
-	chunkSize := int(fileSize) / numParts
-
-	// Find split points that don't cut words
-	splitPoints := make([]int, 0, numParts-1)
-
-	for i := 1; i < numParts; i++ {
-		targetPos := i * chunkSize
-		pos := findWordBoundary(text, targetPos)
-		if pos > 0 && pos < len(text) {
-			splitPoints = append(splitPoints, pos)
+	for i := 0; i < totalLength; i += chunkSize {
+		end := i + chunkSize
+		if end > totalLength {
+			end = totalLength
 		}
-	}
 
-	// Create parts metadata
-	parts := make([]FilePart, 0, numParts)
-	start := 0
-
-	for i, end := range splitPoints {
-		parts = append(parts, FilePart{
-			PartNumber: i + 1,
-			Start:      start,
-			End:        end,
-			Size:       end - start,
-		})
-		start = end
-	}
-
-	// Add last part
-	parts = append(parts, FilePart{
-		PartNumber: len(splitPoints) + 1,
-		Start:      start,
-		End:        len(text),
-		Size:       len(text) - start,
-	})
-
-	return &SplitFile{
-		NumParts: numParts,
-		Filename: info.Name(),
-		FilePath: filepath,
-		FileSize: fileSize,
-		Parts:    parts,
-	}, nil
-}
-
-func findWordBoundary(text string, targetPos int) int {
-	if targetPos >= len(text) {
-		return len(text)
-	}
-
-	// Look forward for whitespace (word boundary)
-	for i := targetPos; i < len(text); i++ {
-		if unicode.IsSpace(rune(text[i])) {
-			// Skip consecutive whitespace to start next chunk with non-space
-			for i < len(text) && unicode.IsSpace(rune(text[i])) {
-				i++
+		// Ensure we don't break words - find the last space before the chunk end
+		if end < totalLength {
+			for j := end - 1; j > i; j-- {
+				if contentRunes[j] == ' ' || contentRunes[j] == '\n' || contentRunes[j] == '\t' {
+					end = j
+					break
+				}
 			}
-			return i
+		}
+
+		chunk := string(contentRunes[i:end])
+		if strings.TrimSpace(chunk) != "" {
+			jobs = append(jobs, Job{
+				JobID:   jobID,
+				PartNum: partNum,
+				Content: chunk,
+			})
+			partNum++
 		}
 	}
 
-	return len(text)
+	log.Printf("Split content into %d jobs", len(jobs))
+	return jobs
 }
 
-func (fs *FileSplitter) getFilePart(filepath string, part FilePart) (string, error) {
-	file, err := os.Open(filepath)
-	if err != nil {
-		return "", fmt.Errorf("failed to open file: %w", err)
-	}
-	defer file.Close()
-
-	// Read the specific part directly
-	_, err = file.Seek(int64(part.Start), 0)
-	if err != nil {
-		return "", fmt.Errorf("failed to seek to position: %w", err)
-	}
-
-	buffer := make([]byte, part.Size)
-	n, err := file.Read(buffer)
-	if err != nil && err != io.EOF {
-		return "", fmt.Errorf("failed to read file part: %w", err)
-	}
-
-	return string(buffer[:n]), nil
-}
-
-// HTTP Handlers
-
-func (fs *FileSplitter) handleSplit(w http.ResponseWriter, r *http.Request) {
+// HTTP handler for receiving results from workers
+func (mrs *MapReduceServer) handleResults(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	var req SplitRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	var result JobResult
+	decoder := json.NewDecoder(r.Body)
+	if err := decoder.Decode(&result); err != nil {
+		log.Printf("Error decoding result: %v", err)
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
 	}
 
-	if req.URL == "" || req.NumParts < 1 {
-		http.Error(w, "URL and num_parts (>0) are required", http.StatusBadRequest)
-		return
+	mrs.mu.Lock()
+	defer mrs.mu.Unlock()
+
+	jobKey := fmt.Sprintf("%s-%d", result.JobID, result.PartNum)
+	log.Printf("Received result from worker %s for job %s part %d: %d words, %d unique",
+		result.WorkerID, result.JobID, result.PartNum, result.TotalWords, result.UniqueWords)
+
+	// Remove from in-progress tracking
+	delete(mrs.jobInProgress, jobKey)
+
+	// Store the result
+	mrs.completedResults[jobKey] = result
+	mrs.totalProcessed++
+
+	// Merge word counts into final result
+	for word, count := range result.WordCount {
+		mrs.finalWordCount[word] += count
 	}
 
-	// Generate job ID from URL hash
-	jobID := fmt.Sprintf("%x", req.URL)[0:8]
+	log.Printf("Progress: %d/%d jobs completed", mrs.totalProcessed, mrs.totalJobs)
 
-	fs.mu.Lock()
-	defer fs.mu.Unlock()
+	// Check if all jobs are completed
+	if mrs.totalProcessed >= mrs.totalJobs {
+		mrs.printFinalResults()
+	}
 
-	// Check if already processed
-	if existing, exists := fs.files[jobID]; exists {
-		response := SplitResponse{
-			JobID:    jobID,
-			URL:      existing.URL,
-			NumParts: existing.NumParts,
-			Parts:    existing.Parts,
-			FileSize: existing.FileSize,
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"status": "received"})
+}
+
+// Print final aggregated results
+func (mrs *MapReduceServer) printFinalResults() {
+	log.Printf("=== FINAL RESULTS ===")
+	log.Printf("Total unique words: %d", len(mrs.finalWordCount))
+
+	totalWords := 0
+	for _, count := range mrs.finalWordCount {
+		totalWords += count
+	}
+	log.Printf("Total word occurrences: %d", totalWords)
+
+	// Print top 20 most frequent words
+	type wordFreq struct {
+		word  string
+		count int
+	}
+
+	var wordFreqs []wordFreq
+	for word, count := range mrs.finalWordCount {
+		wordFreqs = append(wordFreqs, wordFreq{word, count})
+	}
+
+	// Simple bubble sort for top words (good enough for demonstration)
+	for i := 0; i < len(wordFreqs)-1; i++ {
+		for j := 0; j < len(wordFreqs)-i-1; j++ {
+			if wordFreqs[j].count < wordFreqs[j+1].count {
+				wordFreqs[j], wordFreqs[j+1] = wordFreqs[j+1], wordFreqs[j]
+			}
 		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(response)
-		return
 	}
 
-	// Download file
-	filepath, err := fs.downloadFile(req.URL)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Download failed: %v", err), http.StatusBadRequest)
-		return
+	log.Printf("Top 20 most frequent words:")
+	limit := 20
+	if len(wordFreqs) < limit {
+		limit = len(wordFreqs)
 	}
 
-	// Split file
-	splitFile, err := fs.splitFileInMemory(filepath, req.NumParts)
-	if err != nil {
-		os.Remove(filepath) // Clean up
-		http.Error(w, fmt.Sprintf("Split failed: %v", err), http.StatusInternalServerError)
-		return
+	for i := 0; i < limit; i++ {
+		log.Printf("%d. %s: %d", i+1, wordFreqs[i].word, wordFreqs[i].count)
 	}
+}
 
-	splitFile.URL = req.URL
-	fs.files[jobID] = splitFile
+// Health check endpoint
+func (mrs *MapReduceServer) handleHealth(w http.ResponseWriter, r *http.Request) {
+	mrs.mu.RLock()
+	defer mrs.mu.RUnlock()
 
-	response := SplitResponse{
-		JobID:    jobID,
-		URL:      req.URL,
-		NumParts: req.NumParts,
-		Parts:    splitFile.Parts,
-		FileSize: splitFile.FileSize,
+	status := map[string]interface{}{
+		"status":           "healthy",
+		"total_jobs":       mrs.totalJobs,
+		"completed_jobs":   mrs.totalProcessed,
+		"pending_jobs":     len(mrs.pendingJobs),
+		"jobs_in_progress": len(mrs.jobInProgress),
+		"unique_words":     len(mrs.finalWordCount),
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	json.NewEncoder(w).Encode(status)
 }
 
-func (fs *FileSplitter) handleGetPart(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	jobID := vars["jobId"]
-	partNumStr := vars["partNum"]
+// Status endpoint for monitoring
+func (mrs *MapReduceServer) handleStatus(w http.ResponseWriter, r *http.Request) {
+	mrs.mu.RLock()
+	defer mrs.mu.RUnlock()
 
-	partNum, err := strconv.Atoi(partNumStr)
-	if err != nil {
-		http.Error(w, "Invalid part number", http.StatusBadRequest)
-		return
+	totalWords := 0
+	for _, count := range mrs.finalWordCount {
+		totalWords += count
 	}
 
-	fs.mu.RLock()
-	splitFile, exists := fs.files[jobID]
-	fs.mu.RUnlock()
-
-	if !exists {
-		http.Error(w, "Job not found", http.StatusNotFound)
-		return
-	}
-
-	if partNum < 1 || partNum > len(splitFile.Parts) {
-		http.Error(w, "Part number out of range", http.StatusBadRequest)
-		return
-	}
-
-	part := splitFile.Parts[partNum-1]
-	content, err := fs.getFilePart(splitFile.FilePath, part)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to get part: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "text/plain")
-	w.Header().Set("Content-Length", strconv.Itoa(len(content)))
-	w.Write([]byte(content))
-}
-
-func (fs *FileSplitter) handleStatus(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	jobID := vars["jobId"]
-
-	fs.mu.RLock()
-	splitFile, exists := fs.files[jobID]
-	fs.mu.RUnlock()
-
-	if !exists {
-		http.Error(w, "Job not found", http.StatusNotFound)
-		return
-	}
-
-	response := SplitResponse{
-		JobID:    jobID,
-		URL:      splitFile.URL,
-		NumParts: splitFile.NumParts,
-		Parts:    splitFile.Parts,
-		FileSize: splitFile.FileSize,
+	status := map[string]interface{}{
+		"total_jobs":         mrs.totalJobs,
+		"completed_jobs":     mrs.totalProcessed,
+		"pending_jobs":       len(mrs.pendingJobs),
+		"jobs_in_progress":   len(mrs.jobInProgress),
+		"unique_words":       len(mrs.finalWordCount),
+		"total_word_count":   totalWords,
+		"completion_percent": float64(mrs.totalProcessed) / float64(mrs.totalJobs) * 100,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
-}
-
-func (fs *FileSplitter) handleHealth(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "healthy"})
+	json.NewEncoder(w).Encode(status)
 }
 
 func main() {
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
+	// Configuration from environment variables
+	httpPort := os.Getenv("HTTP_PORT")
+	if httpPort == "" {
+		httpPort = "8080"
 	}
 
-	fs := NewFileSplitter()
+	rpcPort := os.Getenv("RPC_PORT")
+	if rpcPort == "" {
+		rpcPort = "1234"
+	}
 
-	r := mux.NewRouter()
+	fileURL := os.Getenv("FILE_URL")
+	if fileURL == "" {
+		fileURL = "https://s3.g.s4.mega.io/2cnjyiqqebttwjrnbitzpvy6uw4j7ujo4bxnu/jiahua-bucket/test.txt"
+	}
 
-	// API routes
-	r.HandleFunc("/split", fs.handleSplit).Methods("POST")
-	r.HandleFunc("/job/{jobId}/part/{partNum}", fs.handleGetPart).Methods("GET")
-	r.HandleFunc("/job/{jobId}/status", fs.handleStatus).Methods("GET")
-	r.HandleFunc("/health", fs.handleHealth).Methods("GET")
+	chunkSizeStr := os.Getenv("CHUNK_SIZE")
+	chunkSize := 10000 // Default chunk size in characters
+	if chunkSizeStr != "" {
+		if size, err := strconv.Atoi(chunkSizeStr); err == nil {
+			chunkSize = size
+		}
+	}
 
-	// Add some basic documentation
-	r.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html")
-		w.Write([]byte(`
-<!DOCTYPE html>
-<html>
-<head><title>File Splitter API</title></head>
-<body>
-<h1>File Splitter API</h1>
-<h2>Endpoints:</h2>
-<ul>
-<li><strong>POST /split</strong> - Split a file from S3 URL
-<pre>{"url": "https://s3.amazonaws.com/.../file.txt", "num_parts": 4}</pre>
-</li>
-<li><strong>GET /job/{jobId}/part/{partNum}</strong> - Get a specific part</li>
-<li><strong>GET /job/{jobId}/status</strong> - Get job status and part info</li>
-<li><strong>GET /health</strong> - Health check</li>
-</ul>
-</body>
-</html>
-		`))
-	})
+	log.Printf("Starting MapReduce Server...")
+	log.Printf("HTTP Port: %s", httpPort)
+	log.Printf("RPC Port: %s", rpcPort)
+	log.Printf("File URL: %s", fileURL)
+	log.Printf("Chunk Size: %d characters", chunkSize)
 
-	log.Printf("Starting server on port %s", port)
-	log.Fatal(http.ListenAndServe(":"+port, r))
+	// Initialize server state
+	server := &MapReduceServer{
+		completedResults: make(map[string]JobResult),
+		finalWordCount:   make(map[string]int),
+		jobInProgress:    make(map[string]time.Time),
+		maxRetries:       3,
+		retryTimeout:     5 * time.Minute,
+	}
+
+	// Download file from URL
+	content, err := downloadFromURL(fileURL)
+	if err != nil {
+		log.Fatalf("Failed to download file: %v", err)
+	}
+
+	// Split content into jobs
+	jobID := fmt.Sprintf("wordcount-%d", time.Now().Unix())
+	server.jobs = splitContentIntoJobs(content, jobID, chunkSize)
+	server.pendingJobs = make([]Job, len(server.jobs))
+	copy(server.pendingJobs, server.jobs)
+	server.totalJobs = len(server.jobs)
+
+	log.Printf("Created %d jobs for processing", server.totalJobs)
+
+	// Start RPC server for job distribution
+	jobServer := &JobServer{server: server}
+	rpc.Register(jobServer)
+
+	rpcListener, err := net.Listen("tcp", ":"+rpcPort)
+	if err != nil {
+		log.Fatalf("Failed to start RPC server: %v", err)
+	}
+
+	go func() {
+		log.Printf("RPC server listening on port %s", rpcPort)
+		for {
+			conn, err := rpcListener.Accept()
+			if err != nil {
+				log.Printf("RPC accept error: %v", err)
+				continue
+			}
+			go rpc.ServeConn(conn)
+		}
+	}()
+
+	// Start HTTP server for result collection and monitoring
+	router := mux.NewRouter()
+	router.HandleFunc("/results", server.handleResults).Methods("POST")
+	router.HandleFunc("/health", server.handleHealth).Methods("GET")
+	router.HandleFunc("/status", server.handleStatus).Methods("GET")
+
+	log.Printf("HTTP server starting on port %s", httpPort)
+	log.Printf("Ready to accept workers!")
+	log.Fatal(http.ListenAndServe(":"+httpPort, router))
 }

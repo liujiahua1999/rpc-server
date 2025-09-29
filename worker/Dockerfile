@@ -31,10 +31,10 @@ COPY --from=builder /app/worker .
 # Expose port (if needed for health checks)
 EXPOSE 8080
 
-# Set default environment variables
+# Set default environment variables for remote RPC server
 ENV WORKER_ID=""
-ENV RPC_SERVER_ADDR="rpc-server:1234"
-ENV REPORT_BACK_URL="http://rpc-server:8080/results"
+ENV RPC_SERVER_ADDR="98.82.151.62:1234"
+ENV REPORT_BACK_URL="http://98.82.151.62:8080/results"
 ENV POLL_INTERVAL="5s"
 
 # Run the binary

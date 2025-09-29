@@ -1,3 +1,0 @@
-Go is a programming language. Go is simple and efficient. 
-Programming in Go is fun. Go makes programming easy.
-Simple, reliable, and efficient software can be built with Go.
