@@ -5,14 +5,14 @@ services:
     build: .
     environment:
       - WORKER_ID=worker-${HOSTNAME:-${RANDOM}}
-      - RPC_SERVER_ADDR=${RPC_SERVER_ADDR:-98.82.151.62:1234}
-      - REPORT_BACK_URL=${REPORT_BACK_URL:-http://98.82.151.62:8080/results}
-      - POLL_INTERVAL=${POLL_INTERVAL:-5s}
+      - RPC_SERVER_ADDR=${RPC_SERVER_ADDR:-184.72.139.236:1234}
+      - REPORT_BACK_URL=${REPORT_BACK_URL:-http://184.72.139.236:8080/results}
+      - POLL_INTERVAL=${POLL_INTERVAL:-30s}
     restart: unless-stopped
     deploy:
       resources:
         limits:
           memory: 512M
-          cpus: '0.5'
+          cpus: '1'
 
 # Simple scaling: docker-compose up --scale word-counter-worker=N

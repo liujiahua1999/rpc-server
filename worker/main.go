@@ -46,12 +46,12 @@ func main() {
 
 	rpcServer := os.Getenv("RPC_SERVER_ADDR")
 	if rpcServer == "" {
-		rpcServer = "localhost:1234"
+		rpcServer = "0.0.0.0:1234"
 	}
 
 	reportURL := os.Getenv("REPORT_BACK_URL")
 	if reportURL == "" {
-		reportURL = "http://localhost:8080/results"
+		reportURL = "http://0.0.0.0:8080/results"
 	}
 
 	log.Printf("Starting word counter worker with ID: %s", workerID)
