@@ -1,16 +1,16 @@
 version: '3.8'
 
 services:
-  splitter:
+  server:
     build: .
     ports:
       - "8080:8080"
       - "1234:1234"
     environment:
-      - PORT=8080
+      - HTTP_PORT=8080
       - RPC_PORT=1234
-    volumes:
-      - /tmp/splitter:/tmp/splitter
+      - FILE_URL=https://s3.g.s4.mega.io/2cnjyiqqebttwjrnbitzpvy6uw4j7ujo4bxnu/jiahua-bucket/test.txt
+      - CHUNK_SIZE=10000
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1"]
@@ -21,4 +21,4 @@ services:
 
 networks:
   default:
-    name: splitter-network
+    name: word-counter-network

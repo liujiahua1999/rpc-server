@@ -1,7 +1,6 @@
-version: '3.8'
+version: '3.3'
 
 services:
-  # Word Counter Worker - connects to remote RPC server at 98.82.151.62
   word-counter-worker:
     build: .
     environment:
@@ -10,15 +9,10 @@ services:
       - REPORT_BACK_URL=${REPORT_BACK_URL:-http://98.82.151.62:8080/results}
       - POLL_INTERVAL=${POLL_INTERVAL:-5s}
     restart: unless-stopped
-    # Resource limits for ECS
-    mem_limit: 512m
-    cpus: 0.5
-    # Health check
-    healthcheck:
-      test: ["CMD", "ps", "aux", "|", "grep", "worker"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
 
 # Simple scaling: docker-compose up --scale word-counter-worker=N

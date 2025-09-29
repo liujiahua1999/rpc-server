@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/rpc"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -45,6 +46,12 @@ type GetJobReply struct {
 	HasJob bool
 }
 
+// Helper struct for word frequency sorting
+type wordFreq struct {
+	word  string
+	count int
+}
+
 // Server state management
 type MapReduceServer struct {
 	mu               sync.RWMutex
@@ -57,6 +64,8 @@ type MapReduceServer struct {
 	jobInProgress    map[string]time.Time // jobID -> start time
 	maxRetries       int
 	retryTimeout     time.Duration
+	fileURL          string    // Store the original file URL
+	startTime        time.Time // Store processing start time
 }
 
 // JobServer RPC service
@@ -249,11 +258,6 @@ func (mrs *MapReduceServer) printFinalResults() {
 	log.Printf("Total word occurrences: %d", totalWords)
 
 	// Print top 20 most frequent words
-	type wordFreq struct {
-		word  string
-		count int
-	}
-
 	var wordFreqs []wordFreq
 	for word, count := range mrs.finalWordCount {
 		wordFreqs = append(wordFreqs, wordFreq{word, count})
@@ -277,6 +281,40 @@ func (mrs *MapReduceServer) printFinalResults() {
 	for i := 0; i < limit; i++ {
 		log.Printf("%d. %s: %d", i+1, wordFreqs[i].word, wordFreqs[i].count)
 	}
+
+	// Generate the report file
+	mrs.generateReport(wordFreqs)
+}
+
+// Generate report.txt with processing results
+func (mrs *MapReduceServer) generateReport(wordFreqs []wordFreq) {
+	// Extract filename from URL
+	filename := filepath.Base(mrs.fileURL)
+	if filename == "" || filename == "." {
+		filename = "unknown_file"
+	}
+
+	// Calculate processing duration
+	processingDuration := time.Since(mrs.startTime)
+
+	// Create report content
+	reportContent := "Word Count Processing Report\n"
+	reportContent += "===========================\n\n"
+	reportContent += fmt.Sprintf("Date: %s\n", time.Now().Format("2006-01-02 15:04:05"))
+	reportContent += fmt.Sprintf("Source File: %s\n", filename)
+	reportContent += fmt.Sprintf("Source URL: %s\n", mrs.fileURL)
+	reportContent += fmt.Sprintf("Processing Duration: %s\n\n", processingDuration.Round(time.Second))
+
+
+	// Write report to file
+	reportFile := "report.txt"
+	err := os.WriteFile(reportFile, []byte(reportContent), 0644)
+	if err != nil {
+		log.Printf("Error writing report file: %v", err)
+		return
+	}
+
+	log.Printf("Report generated successfully: %s", reportFile)
 }
 
 // Health check endpoint
@@ -339,7 +377,7 @@ func main() {
 	}
 
 	chunkSizeStr := os.Getenv("CHUNK_SIZE")
-	chunkSize := 10000 // Default chunk size in characters
+	chunkSize := 500000 // Default chunk size in characters
 	if chunkSizeStr != "" {
 		if size, err := strconv.Atoi(chunkSizeStr); err == nil {
 			chunkSize = size
@@ -359,6 +397,8 @@ func main() {
 		jobInProgress:    make(map[string]time.Time),
 		maxRetries:       3,
 		retryTimeout:     5 * time.Minute,
+		fileURL:          fileURL,
+		startTime:        time.Now(),
 	}
 
 	// Download file from URL

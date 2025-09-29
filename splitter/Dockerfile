@@ -14,10 +14,10 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 # Copy source code
-COPY rpc-server.go .
+COPY server.go .
 
 # Build the application
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o splitter-server rpc-server.go
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o server server.go
 
 # Use minimal alpine image for runtime
 FROM alpine:latest
@@ -29,16 +29,14 @@ RUN apk --no-cache add ca-certificates
 WORKDIR /root/
 
 # Copy binary from builder
-COPY --from=builder /app/splitter-server .
+COPY --from=builder /app/server .
 
-# Create temp directory for file downloads
-RUN mkdir -p /tmp/splitter
+# Expose ports for HTTP and RPC
+EXPOSE 8080 1234
 
-# Expose port
-EXPOSE 8080
-
-# Set environment variable for port
-ENV PORT=8080
+# Set environment variables
+ENV HTTP_PORT=8080
+ENV RPC_PORT=1234
 
 # Run the application
-CMD ["./splitter-server"]
+CMD ["./server"]

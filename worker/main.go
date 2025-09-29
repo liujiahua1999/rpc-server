@@ -3,9 +3,11 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"net/rpc"
+	"os"
 	"strings"
 	"time"
 )
@@ -36,22 +38,40 @@ type GetJobReply struct {
 }
 
 func main() {
-	workerID := "worker-1"
-	rpcAddr := "localhost:1234"
-	reportURL := "http://localhost:8080/results"
+	// Get configuration from environment variables
+	workerID := os.Getenv("WORKER_ID")
+	if workerID == "" {
+		workerID = fmt.Sprintf("worker-%d", time.Now().Unix())
+	}
 
-	client, err := rpc.Dial("tcp", rpcAddr)
+	rpcServer := os.Getenv("RPC_SERVER_ADDR")
+	if rpcServer == "" {
+		rpcServer = "localhost:1234"
+	}
+
+	reportURL := os.Getenv("REPORT_BACK_URL")
+	if reportURL == "" {
+		reportURL = "http://localhost:8080/results"
+	}
+
+	log.Printf("Starting word counter worker with ID: %s", workerID)
+	log.Printf("RPC Server: %s", rpcServer)
+	log.Printf("Report URL: %s", reportURL)
+
+	client, err := rpc.Dial("tcp", rpcServer)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("Failed to connect to RPC server: %v", err)
 	}
 	defer client.Close()
+
+	log.Println("Connected to RPC server, starting work loop...")
 
 	for {
 		// Get job
 		var reply GetJobReply
-		err := client.Call("JobQueue.GetJob", GetJobArgs{WorkerID: workerID}, &reply)
+		err := client.Call("JobServer.GetJob", GetJobArgs{WorkerID: workerID}, &reply)
 		if err != nil {
-			log.Println(err)
+			log.Printf("Error getting job from RPC server: %v", err)
 			time.Sleep(5 * time.Second)
 			continue
 		}

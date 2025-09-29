@@ -1,14 +1,12 @@
-nohup: ignoring input
-2025/09/29 02:24:26 RPC server listening on port 1235
-2025/09/29 02:24:26 HTTP server starting on port 8082
-2025/09/29 02:24:26 RPC server available for worker connections
-2025/09/29 02:24:46 Queued job job-1759112685 part 1
-2025/09/29 02:24:46 Queued job job-1759112685 part 2
-2025/09/29 02:25:02 Dispatching job job-1759112685 part 1 to worker test-worker-1
-2025/09/29 02:25:02 Received result for job job-1759112685 part 1 from worker test-worker-1
-2025/09/29 02:25:02 Job job-1759112685: 1/2 parts completed
-2025/09/29 02:25:03 Dispatching job job-1759112685 part 2 to worker test-worker-1
-2025/09/29 02:25:03 Received result for job job-1759112685 part 2 from worker test-worker-1
-2025/09/29 02:25:03 Job job-1759112685: 2/2 parts completed
-2025/09/29 02:25:03 Aggregating results for job job-1759112685
-2025/09/29 02:25:03 Job job-1759112685 completed: 70826 total words, 9697 unique words
+2025/09/29 06:00:31 Starting MapReduce Server...
+2025/09/29 06:00:31 HTTP Port: 8080
+2025/09/29 06:00:31 RPC Port: 1234
+2025/09/29 06:00:31 File URL: https://s3.g.s4.mega.io/2cnjyiqqebttwjrnbitzpvy6uw4j7ujo4bxnu/jiahua-bucket/test.txt
+2025/09/29 06:00:31 Chunk Size: 10000 characters
+2025/09/29 06:00:31 Downloading file from: https://s3.g.s4.mega.io/2cnjyiqqebttwjrnbitzpvy6uw4j7ujo4bxnu/jiahua-bucket/test.txt
+2025/09/29 06:00:33 Successfully downloaded 5458199 bytes
+2025/09/29 06:00:33 Split content into 546 jobs
+2025/09/29 06:00:33 Created 546 jobs for processing
+2025/09/29 06:00:33 HTTP server starting on port 8080
+2025/09/29 06:00:33 Ready to accept workers!
+2025/09/29 06:00:33 RPC server listening on port 1234
