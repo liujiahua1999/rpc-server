@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  splitter:
+    build: .
+    ports:
+      - "8080:8080"
+      - "1234:1234"
+    environment:
+      - PORT=8080
+      - RPC_PORT=1234
+    volumes:
+      - /tmp/splitter:/tmp/splitter
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+networks:
+  default:
+    name: splitter-network

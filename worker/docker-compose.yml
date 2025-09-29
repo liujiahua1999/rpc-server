@@ -1,0 +1,47 @@
+version: '3.8'
+
+services:
+  # Word Counter Worker
+  word-counter-worker-1:
+    build: .
+    environment:
+      - WORKER_ID=worker-1
+      - RPC_SERVER_ADDR=rpc-server:1234
+      - REPORT_BACK_URL=http://rpc-server:8080/results
+      - POLL_INTERVAL=5s
+    depends_on:
+      - rpc-server
+    restart: unless-stopped
+    networks:
+      - word-counter-network
+
+  # Additional workers can be scaled
+  word-counter-worker-2:
+    build: .
+    environment:
+      - WORKER_ID=worker-2
+      - RPC_SERVER_ADDR=rpc-server:1234
+      - REPORT_BACK_URL=http://rpc-server:8080/results
+      - POLL_INTERVAL=5s
+    depends_on:
+      - rpc-server
+    restart: unless-stopped
+    networks:
+      - word-counter-network
+
+  # Mock RPC Server (placeholder - replace with actual RPC server)
+  rpc-server:
+    image: alpine:latest
+    command: ["sh", "-c", "echo 'RPC Server placeholder - replace with actual server' && sleep infinity"]
+    ports:
+      - "1234:1234"  # RPC port
+      - "8080:8080"  # HTTP report back port
+    networks:
+      - word-counter-network
+
+networks:
+  word-counter-network:
+    driver: bridge
+
+# To scale workers:
+# docker-compose up --scale word-counter-worker-1=3 --scale word-counter-worker-2=0

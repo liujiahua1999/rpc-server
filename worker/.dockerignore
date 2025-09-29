@@ -1,0 +1,33 @@
+# Git
+.git
+.gitignore
+
+# Documentation
+*.md
+!README.md
+
+# Development files
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+worker
+main_old.go
+
+# Test files
+*_test.go
+test_*
+
+# Logs
+*.log
+
+# Temporary files
+tmp/
+temp/
