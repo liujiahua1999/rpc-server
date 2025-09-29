@@ -33,8 +33,8 @@ EXPOSE 8080
 
 # Set default environment variables for remote RPC server
 ENV WORKER_ID=""
-ENV RPC_SERVER_ADDR="98.82.151.62:1234"
-ENV REPORT_BACK_URL="http://98.82.151.62:8080/results"
+ENV RPC_SERVER_ADDR="184.72.139.236:1234"
+ENV REPORT_BACK_URL="http://184.72.139.236:8080/results"
 ENV POLL_INTERVAL="30s"
 
 # Run the binary
