@@ -10,7 +10,7 @@ services:
       - HTTP_PORT=8080
       - RPC_PORT=1234
       - FILE_URL=https://s3.g.s4.mega.io/2cnjyiqqebttwjrnbitzpvy6uw4j7ujo4bxnu/jiahua-bucket/test.txt
-      - CHUNK_SIZE=10000
+      - CHUNK_SIZE=500000
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1"]
